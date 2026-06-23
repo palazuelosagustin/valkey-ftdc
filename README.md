@@ -4,14 +4,29 @@
 
 ## Build
 
+On macOS:
+
 ```bash
-make build
+make all
+```
+
+On Linux:
+
+```bash
+make all
 ```
 
 Outputs:
 
 - `build/valkey-ftdc.so`
 - `build/valkey-ftdcstat`
+
+The module binary is platform-specific:
+
+- build `valkey-ftdc.so` on macOS for macOS
+- build `valkey-ftdc.so` on Linux for Linux
+
+Do not copy a macOS-built module to Linux or a Linux-built module to macOS.
 
 ## Load
 
@@ -53,6 +68,29 @@ build/valkey-ftdcstat /var/lib/valkey/diagnostic.data
 build/valkey-ftdcstat --json /var/lib/valkey/diagnostic.data
 build/valkey-ftdcstat --view memory /var/lib/valkey/diagnostic.data
 ```
+
+## Build On Another Host
+
+To build on a different Linux host or VM, copy the source tree and build there:
+
+```bash
+cd ~/bin/valkey-ftdc
+tar -czf /tmp/valkey-ftdc-src.tar.gz Makefile README.md go.mod include src tools tests
+scp /tmp/valkey-ftdc-src.tar.gz user@host:/tmp/
+```
+
+Then on that host:
+
+```bash
+rm -rf /tmp/valkey-ftdc
+mkdir -p /tmp/valkey-ftdc
+tar -C /tmp/valkey-ftdc -xzf /tmp/valkey-ftdc-src.tar.gz
+cd /tmp/valkey-ftdc
+make all
+file build/valkey-ftdc.so
+```
+
+On Linux, `file build/valkey-ftdc.so` should report an `ELF 64-bit` shared object.
 
 ## Notes
 
