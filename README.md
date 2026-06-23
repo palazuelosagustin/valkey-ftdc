@@ -19,7 +19,6 @@ make all
 Outputs:
 
 - `build/valkey-ftdc.so`
-- `build/valkey-ftdcstat`
 
 The module binary is platform-specific:
 
@@ -79,13 +78,9 @@ VKFTDC1
 ...
 ```
 
-## Reader
-
-```bash
-build/valkey-ftdcstat /var/lib/valkey/diagnostic.data
-build/valkey-ftdcstat --json /var/lib/valkey/diagnostic.data
-build/valkey-ftdcstat --view memory /var/lib/valkey/diagnostic.data
-```
+Each sample is stored as raw JSON. `valkey-ftdc` is a collector only; parsing,
+delta computation, summaries, and report formatting are expected to be handled
+by separate downstream tools.
 
 ## Build On Another Host
 
