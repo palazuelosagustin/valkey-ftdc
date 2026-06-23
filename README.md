@@ -78,6 +78,13 @@ VKFTDC1
 ...
 ```
 
+Rotation produces two file types:
+
+- `metrics.<timestamp>.vkftdc`: the sampled data file. It contains the `VKFTDC1`
+  header, one metadata JSON line, and then one raw sample JSON document per line.
+- `metadata.<timestamp>.json`: a small sidecar JSON file that describes the
+  rotated metrics file itself. It is not a stream of samples.
+
 Each sample is stored as raw JSON. `valkey-ftdc` is a collector only; parsing,
 delta computation, summaries, and report formatting are expected to be handled
 by separate downstream tools.
