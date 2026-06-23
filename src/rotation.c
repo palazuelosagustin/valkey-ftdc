@@ -64,7 +64,149 @@ static void format_utc_timestamp(long long now_ms, char *dst, size_t dst_len) {
     strftime(dst, dst_len, "%Y-%m-%dT%H-%M-%SZ", &tmv);
 }
 
-int ftdc_rotation_open_next_file(FtdcState *state) {
+static int json_write_escaped(FILE *fp, const char *s, size_t len) {
+    size_t i;
+    for (i = 0; i < len; ++i) {
+        unsigned char ch = (unsigned char)s[i];
+        switch (ch) {
+            case '\\':
+            case '"':
+                if (fprintf(fp, "\\%c", ch) < 0) return -1;
+                break;
+            case '\n':
+                if (fputs("\\n", fp) == EOF) return -1;
+                break;
+            case '\r':
+                if (fputs("\\r", fp) == EOF) return -1;
+                break;
+            case '\t':
+                if (fputs("\\t", fp) == EOF) return -1;
+                break;
+            default:
+                if (ch < 0x20) {
+                    if (fprintf(fp, "\\u%04x", ch) < 0) return -1;
+                } else if (fputc(ch, fp) == EOF) {
+                    return -1;
+                }
+                break;
+        }
+    }
+    return 0;
+}
+
+static int json_write_string_reply(FILE *fp, ValkeyModuleCallReply *reply) {
+    size_t len = 0;
+    const char *s = ValkeyModule_CallReplyStringPtr(reply, &len);
+    if (fputc('"', fp) == EOF) return -1;
+    if (json_write_escaped(fp, s, len) != 0) return -1;
+    if (fputc('"', fp) == EOF) return -1;
+    return 0;
+}
+
+static int json_write_reply(FILE *fp, ValkeyModuleCallReply *reply);
+
+static int json_write_map_reply(FILE *fp, ValkeyModuleCallReply *reply) {
+    size_t i;
+    if (fputc('{', fp) == EOF) return -1;
+    for (i = 0; i < ValkeyModule_CallReplyLength(reply); ++i) {
+        ValkeyModuleCallReply *key = NULL;
+        ValkeyModuleCallReply *value = NULL;
+        if (ValkeyModule_CallReplyMapElement(reply, i, &key, &value) != VALKEYMODULE_OK) {
+            return -1;
+        }
+        if (i > 0 && fputc(',', fp) == EOF) return -1;
+        if (json_write_string_reply(fp, key) != 0) return -1;
+        if (fputc(':', fp) == EOF) return -1;
+        if (json_write_reply(fp, value) != 0) return -1;
+    }
+    if (fputc('}', fp) == EOF) return -1;
+    return 0;
+}
+
+static int json_write_array_reply(FILE *fp, ValkeyModuleCallReply *reply) {
+    size_t len = ValkeyModule_CallReplyLength(reply);
+    size_t i;
+    int config_pairs = 1;
+    if (len % 2 != 0) {
+        config_pairs = 0;
+    }
+    if (config_pairs) {
+        for (i = 0; i < len; i += 2) {
+            ValkeyModuleCallReply *key = ValkeyModule_CallReplyArrayElement(reply, i);
+            if (key == NULL || ValkeyModule_CallReplyType(key) != VALKEYMODULE_REPLY_STRING) {
+                config_pairs = 0;
+                break;
+            }
+        }
+    }
+    if (config_pairs) {
+        if (fputc('{', fp) == EOF) return -1;
+        for (i = 0; i < len; i += 2) {
+            ValkeyModuleCallReply *key = ValkeyModule_CallReplyArrayElement(reply, i);
+            ValkeyModuleCallReply *value = ValkeyModule_CallReplyArrayElement(reply, i + 1);
+            if (i > 0 && fputc(',', fp) == EOF) return -1;
+            if (json_write_string_reply(fp, key) != 0) return -1;
+            if (fputc(':', fp) == EOF) return -1;
+            if (json_write_reply(fp, value) != 0) return -1;
+        }
+        if (fputc('}', fp) == EOF) return -1;
+        return 0;
+    }
+
+    if (fputc('[', fp) == EOF) return -1;
+    for (i = 0; i < len; ++i) {
+        ValkeyModuleCallReply *elem = ValkeyModule_CallReplyArrayElement(reply, i);
+        if (i > 0 && fputc(',', fp) == EOF) return -1;
+        if (json_write_reply(fp, elem) != 0) return -1;
+    }
+    if (fputc(']', fp) == EOF) return -1;
+    return 0;
+}
+
+static int json_write_reply(FILE *fp, ValkeyModuleCallReply *reply) {
+    switch (ValkeyModule_CallReplyType(reply)) {
+        case VALKEYMODULE_REPLY_STRING:
+        case VALKEYMODULE_REPLY_ERROR:
+        case VALKEYMODULE_REPLY_VERBATIM_STRING:
+        case VALKEYMODULE_REPLY_BIG_NUMBER:
+            return json_write_string_reply(fp, reply);
+        case VALKEYMODULE_REPLY_INTEGER:
+            return fprintf(fp, "%lld", ValkeyModule_CallReplyInteger(reply)) < 0 ? -1 : 0;
+        case VALKEYMODULE_REPLY_DOUBLE:
+            return fprintf(fp, "%.17g", ValkeyModule_CallReplyDouble(reply)) < 0 ? -1 : 0;
+        case VALKEYMODULE_REPLY_BOOL:
+            return fputs(ValkeyModule_CallReplyBool(reply) ? "true" : "false", fp) == EOF ? -1 : 0;
+        case VALKEYMODULE_REPLY_NULL:
+            return fputs("null", fp) == EOF ? -1 : 0;
+        case VALKEYMODULE_REPLY_MAP:
+            return json_write_map_reply(fp, reply);
+        case VALKEYMODULE_REPLY_ARRAY:
+        case VALKEYMODULE_REPLY_SET:
+            return json_write_array_reply(fp, reply);
+        default:
+            return fputs("null", fp) == EOF ? -1 : 0;
+    }
+}
+
+static int write_metrics_metadata(FILE *fp, ValkeyModuleCtx *ctx) {
+    ValkeyModuleCallReply *config = ValkeyModule_Call(ctx, "CONFIG", "cc", "GET", "*");
+    if (fprintf(fp,
+                "{\"format_version\":%d,\"module\":\"valkey-ftdc\",\"compression\":\"none\",\"created_at_ms\":%lld",
+                FTDC_METADATA_VERSION, ftdc_now_ms()) < 0) {
+        if (config != NULL) ValkeyModule_FreeCallReply(config);
+        return -1;
+    }
+    if (config != NULL) {
+        if (fputs(",\"config\":", fp) == EOF || json_write_reply(fp, config) != 0) {
+            ValkeyModule_FreeCallReply(config);
+            return -1;
+        }
+        ValkeyModule_FreeCallReply(config);
+    }
+    return fputs("}\n", fp) == EOF ? -1 : 0;
+}
+
+int ftdc_rotation_open_next_file(ValkeyModuleCtx *ctx, FtdcState *state) {
     char stamp[64];
     char meta_path[PATH_MAX];
     FILE *meta;
@@ -92,9 +234,11 @@ int ftdc_rotation_open_next_file(FtdcState *state) {
         state->fp = NULL;
         return -1;
     }
-    fprintf(state->fp,
-            "{\"format_version\":%d,\"module\":\"valkey-ftdc\",\"compression\":\"none\",\"created_at_ms\":%lld}\n",
-            FTDC_METADATA_VERSION, ftdc_now_ms());
+    if (write_metrics_metadata(state->fp, ctx) != 0) {
+        fclose(state->fp);
+        state->fp = NULL;
+        return -1;
+    }
     fflush(state->fp);
     state->current_file_bytes = (long long)ftell(state->fp);
     state->current_file_opened_ms = ftdc_now_ms();

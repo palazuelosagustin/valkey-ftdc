@@ -22,7 +22,7 @@ int ftdc_writer_rotate(ValkeyModuleCtx *ctx, FtdcState *state) {
         ftdc_set_error(state, "mkdir %s failed: %s", state->config.path, strerror(errno));
         return VALKEYMODULE_ERR;
     }
-    if (ftdc_rotation_open_next_file(state) != 0) {
+    if (ftdc_rotation_open_next_file(ctx, state) != 0) {
         ftdc_set_error(state, "open diagnostic file failed: %s", strerror(errno));
         return VALKEYMODULE_ERR;
     }
