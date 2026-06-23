@@ -92,6 +92,14 @@ file build/valkey-ftdc.so
 
 On Linux, `file build/valkey-ftdc.so` should report an `ELF 64-bit` shared object.
 
+## License
+
+This project is intended to be released under the MIT License.
+
+`include/valkeymodule.h` is vendored from Valkey, whose source tree is licensed
+under the BSD 3-Clause License. Keep the upstream copyright and license notice
+for that file when redistributing it.
+
 ## Notes
 
 - Safe defaults: slowlog capture is disabled, and slowlog args are redacted if enabled.
