@@ -49,6 +49,24 @@ valkey-server \
 - `FTDC.CONFIG GET [name]`
 - `FTDC.CONFIG SET name value`
 
+## Collected Metrics
+
+Each sample includes:
+
+- `ts_ms`
+- Valkey `INFO` sections: `server`, `clients`, `memory`, `persistence`, `stats`, `replication`, `cpu`, `commandstats`, and `cluster`
+- `LATENCY LATEST` events with `event`, `latest_ms`, `max_ms`, and `all_time_ms`
+- `SLOWLOG LEN`; if `collect-slowlog yes` is enabled, up to 8 recent slowlog entries with `id`, `ts`, `duration_usec`, and `args`
+
+If `collect-host-stats yes` is enabled, Linux builds also include host data from `/proc`:
+
+- `loadavg`
+- host CPU counters from `/proc/stat`, including `user`, `nice`, `system`, `idle`, `iowait`, `irq`, `softirq`, `steal`, `guest`, `guest_nice`, `ctxt`, `processes`, `procs_running`, and `procs_blocked`
+- memory data from `/proc/meminfo`
+- disk data from `/proc/diskstats`
+- network data from `/proc/net/dev`
+- process data from `/proc/self/status` and `/proc/self/io`
+
 ## File format
 
 Each metrics file is:

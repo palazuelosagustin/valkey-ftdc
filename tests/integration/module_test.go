@@ -159,6 +159,51 @@ func TestModuleLifecycle(t *testing.T) {
 	}
 }
 
+func TestHostStatsIncludeRawProcStatCounters(t *testing.T) {
+	if _, err := exec.LookPath("valkey-server"); err != nil {
+		t.Skip("valkey-server not found")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modulePath := filepath.Join(root, "build", "valkey-ftdc.so")
+	if _, err := os.Stat(modulePath); err != nil {
+		t.Skip("module not built")
+	}
+	port := freePort(t)
+	tmp := t.TempDir()
+	cmd := exec.Command("valkey-server",
+		"--port", strconv.Itoa(port),
+		"--save", "",
+		"--appendonly", "no",
+		"--loadmodule", modulePath,
+		"path", filepath.Join(tmp, "diagnostic.data"),
+		"interval-ms", "100",
+		"collect-host-stats", "yes",
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = exec.Command("valkey-cli", "-p", strconv.Itoa(port), "SHUTDOWN", "NOSAVE").Run()
+		_ = cmd.Wait()
+	}()
+	waitPing(t, port)
+
+	sample := sampleJSON(t, port)
+	host, _ := sample["host"].(map[string]any)
+	cpu, _ := host["cpu"].(map[string]any)
+	if supported, _ := host["supported"].(bool); !supported {
+		t.Skip("host stats not supported on this platform")
+	}
+	for _, field := range []string{"user", "system", "idle", "ctxt", "processes", "procs_running", "procs_blocked"} {
+		if _, ok := cpu[field]; !ok {
+			t.Fatalf("expected host cpu field %q in %#v", field, cpu)
+		}
+	}
+}
+
 func TestMetricsFileHasHeader(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "metrics.sample.vkftdc")

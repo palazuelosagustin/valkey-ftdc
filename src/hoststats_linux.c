@@ -151,19 +151,44 @@ static int append_proc_stat_json(struct JsonBuf *buf) {
     FILE *fp = fopen("/proc/stat", "r");
     char line[512];
     unsigned long long user = 0, nice = 0, sys = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
-    char tmp[256];
+    unsigned long long guest = 0, guest_nice = 0;
+    unsigned long long ctxt = 0, processes = 0, procs_running = 0, procs_blocked = 0;
+    char tmp[512];
+    int have_cpu = 0;
     if (fp == NULL) {
         return buf_append(buf, "{\"available\":false}");
     }
-    if (fgets(line, sizeof(line), fp) == NULL ||
-        sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &user, &nice, &sys, &idle, &iowait, &irq, &softirq, &steal) < 4) {
-        fclose(fp);
-        return buf_append(buf, "{\"available\":false}");
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (!have_cpu && strncmp(line, "cpu ", 4) == 0) {
+            int matched = sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                                 &user, &nice, &sys, &idle, &iowait, &irq, &softirq, &steal, &guest, &guest_nice);
+            if (matched >= 4) {
+                have_cpu = 1;
+            }
+            continue;
+        }
+        if (sscanf(line, "ctxt %llu", &ctxt) == 1) {
+            continue;
+        }
+        if (sscanf(line, "processes %llu", &processes) == 1) {
+            continue;
+        }
+        if (sscanf(line, "procs_running %llu", &procs_running) == 1) {
+            continue;
+        }
+        if (sscanf(line, "procs_blocked %llu", &procs_blocked) == 1) {
+            continue;
+        }
     }
     fclose(fp);
+    if (!have_cpu) {
+        return buf_append(buf, "{\"available\":false}");
+    }
     snprintf(tmp, sizeof(tmp),
-             "{\"available\":true,\"user\":%llu,\"nice\":%llu,\"system\":%llu,\"idle\":%llu,\"iowait\":%llu,\"irq\":%llu,\"softirq\":%llu,\"steal\":%llu}",
-             user, nice, sys, idle, iowait, irq, softirq, steal);
+             "{\"available\":true,\"user\":%llu,\"nice\":%llu,\"system\":%llu,\"idle\":%llu,\"iowait\":%llu,\"irq\":%llu,\"softirq\":%llu,\"steal\":%llu,"
+             "\"guest\":%llu,\"guest_nice\":%llu,\"ctxt\":%llu,\"processes\":%llu,\"procs_running\":%llu,\"procs_blocked\":%llu}",
+             user, nice, sys, idle, iowait, irq, softirq, steal,
+             guest, guest_nice, ctxt, processes, procs_running, procs_blocked);
     return buf_append(buf, tmp);
 }
 
