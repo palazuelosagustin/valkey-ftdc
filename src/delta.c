@@ -368,6 +368,7 @@ static int parse_flat_value(const char **p, FlatSample *flat, char *path, size_t
         return 0;
     }
     if (**p == '-' || isdigit((unsigned char)**p)) {
+        const char *start = *p;
         char *end = NULL;
         long long value = strtoll(*p, &end, 10);
         if (end == *p) {
@@ -375,8 +376,13 @@ static int parse_flat_value(const char **p, FlatSample *flat, char *path, size_t
         }
         while (*end != '\0' && (isdigit((unsigned char)*end) || *end == '.' || *end == 'e' || *end == 'E' || *end == '+' || *end == '-')) {
             if (*end == '.' || *end == 'e' || *end == 'E') {
-                *p = end;
-                return skip_json_value(p);
+                char *float_end = NULL;
+                (void)strtod(start, &float_end);
+                if (float_end == start) {
+                    return -1;
+                }
+                *p = float_end;
+                return 0;
             }
             ++end;
         }
