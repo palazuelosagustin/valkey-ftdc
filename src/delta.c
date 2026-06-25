@@ -92,6 +92,19 @@ static void skip_ws(const char **p) {
     }
 }
 
+static void copy_truncated(char *dst, size_t dst_len, const char *src) {
+    size_t n;
+    if (dst_len == 0) {
+        return;
+    }
+    n = strlen(src);
+    if (n >= dst_len) {
+        n = dst_len - 1;
+    }
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 static int parse_json_string(const char **p, char *dst, size_t dst_len) {
     size_t len = 0;
     if (**p != '"') {
@@ -289,7 +302,7 @@ static int metric_state_set(MetricState **items, size_t *len, size_t *cap, const
         *items = next;
         *cap = next_cap;
     }
-    snprintf((*items)[*len].path, sizeof((*items)[*len].path), "%s", path);
+    copy_truncated((*items)[*len].path, sizeof((*items)[*len].path), path);
     (*items)[*len].value = value;
     *len += 1;
     return 0;
@@ -315,10 +328,10 @@ static int flat_sample_add_metric(FlatSample *flat, const char *path, long long 
 
 static void flat_sample_note_string(FlatSample *flat, const char *path, const char *value) {
     if (strcmp(path, "valkey.info.server.run_id") == 0) {
-        snprintf(flat->identity.run_id, sizeof(flat->identity.run_id), "%s", value);
+        copy_truncated(flat->identity.run_id, sizeof(flat->identity.run_id), value);
         flat->identity.valid = 1;
     } else if (strcmp(path, "valkey.info.replication.role") == 0) {
-        snprintf(flat->identity.role, sizeof(flat->identity.role), "%s", value);
+        copy_truncated(flat->identity.role, sizeof(flat->identity.role), value);
     }
 }
 
