@@ -190,9 +190,11 @@ static int json_write_reply(FILE *fp, ValkeyModuleCallReply *reply) {
 
 static int write_metrics_metadata(FILE *fp, ValkeyModuleCtx *ctx) {
     ValkeyModuleCallReply *config = ValkeyModule_Call(ctx, "CONFIG", "cc", "GET", "*");
+    int format_version = g_ftdc.config.delta_metrics ? FTDC_FORMAT_VERSION_DELTA : FTDC_FORMAT_VERSION_SNAPSHOT;
     if (fprintf(fp,
-                "{\"format_version\":%d,\"module\":\"valkey-ftdc\",\"compression\":\"none\",\"created_at_ms\":%lld",
-                FTDC_METADATA_VERSION, ftdc_now_ms()) < 0) {
+                "{\"format_version\":%d,\"schema_version\":%d,\"delta_mode\":%s,\"module\":\"valkey-ftdc\","
+                "\"compression\":\"none\",\"created_at_ms\":%lld",
+                format_version, FTDC_METADATA_VERSION, g_ftdc.config.delta_metrics ? "true" : "false", ftdc_now_ms()) < 0) {
         if (config != NULL) ValkeyModule_FreeCallReply(config);
         return -1;
     }
@@ -245,9 +247,12 @@ int ftdc_rotation_open_next_file(ValkeyModuleCtx *ctx, FtdcState *state) {
 
     meta = fopen(meta_path, "wb");
     if (meta != NULL) {
+        int format_version = state->config.delta_metrics ? FTDC_FORMAT_VERSION_DELTA : FTDC_FORMAT_VERSION_SNAPSHOT;
         fprintf(meta,
-                "{\"format_version\":%d,\"module\":\"valkey-ftdc\",\"current_file\":\"%s\",\"created_at_ms\":%lld}\n",
-                FTDC_METADATA_VERSION, state->current_file, state->current_file_opened_ms);
+                "{\"format_version\":%d,\"schema_version\":%d,\"delta_mode\":%s,\"module\":\"valkey-ftdc\","
+                "\"current_file\":\"%s\",\"created_at_ms\":%lld}\n",
+                format_version, FTDC_METADATA_VERSION, state->config.delta_metrics ? "true" : "false",
+                state->current_file, state->current_file_opened_ms);
         fclose(meta);
     }
     return 0;

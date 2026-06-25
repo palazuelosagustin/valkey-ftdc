@@ -24,6 +24,7 @@ endif
 MODULE_SRCS := \
 	$(SRC_DIR)/ftdc.c \
 	$(SRC_DIR)/collector.c \
+	$(SRC_DIR)/delta.c \
 	$(SRC_DIR)/writer.c \
 	$(SRC_DIR)/rotation.c \
 	$(SRC_DIR)/redact.c \
@@ -40,7 +41,7 @@ $(BUILD_DIR):
 
 module: $(MODULE_OUTPUT)
 
-$(MODULE_OUTPUT): $(MODULE_SRCS) $(SRC_DIR)/ftdc.h $(SRC_DIR)/collector.h $(SRC_DIR)/writer.h $(SRC_DIR)/rotation.h $(SRC_DIR)/hoststats.h $(SRC_DIR)/redact.h | $(BUILD_DIR)
+$(MODULE_OUTPUT): $(MODULE_SRCS) $(SRC_DIR)/ftdc.h $(SRC_DIR)/collector.h $(SRC_DIR)/delta.h $(SRC_DIR)/writer.h $(SRC_DIR)/rotation.h $(SRC_DIR)/hoststats.h $(SRC_DIR)/redact.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) -fPIC $(SHARED_LDFLAGS) -o $@ $(MODULE_SRCS)
 
 test: $(BUILD_TARGET)

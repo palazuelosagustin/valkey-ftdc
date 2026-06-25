@@ -34,6 +34,8 @@ valkey-server \
   --loadmodule /path/to/build/valkey-ftdc.so \
   path /var/lib/valkey/diagnostic.data \
   interval-ms 1000 \
+  delta-metrics yes \
+  checkpoint-interval-ms 60000 \
   max-file-mb 64 \
   max-dir-mb 512 \
   collect-host-stats yes
@@ -47,6 +49,11 @@ valkey-server \
 - `FTDC.ROTATE`
 - `FTDC.CONFIG GET [name]`
 - `FTDC.CONFIG SET name value`
+
+New write-path controls:
+
+- `delta-metrics yes|no`: enable format-version 2 checkpoint/delta records
+- `checkpoint-interval-ms <ms>`: force a full checkpoint at the configured interval while delta mode is enabled
 
 ## Collected Metrics
 
@@ -81,13 +88,20 @@ VKFTDC1
 Rotation produces two file types:
 
 - `metrics.<timestamp>.vkftdc`: the sampled data file. It contains the `VKFTDC1`
-  header, one metadata JSON line, and then one raw sample JSON document per line.
+  header, one metadata JSON line, and then one JSON record per line.
 - `metadata.<timestamp>.json`: a small sidecar JSON file that describes the
   rotated metrics file itself. It is not a stream of samples.
 
-Each sample is stored as raw JSON. `valkey-ftdc` is a collector only; parsing,
-delta computation, summaries, and report formatting are expected to be handled
-by separate downstream tools.
+Format version 1 stores raw snapshot samples exactly as collected.
+
+Format version 2 is enabled with `delta-metrics yes` and writes:
+
+- `checkpoint` records with full absolute samples
+- `delta` records with per-metric deltas for selected monotonic counters
+- `restart` records when the collector detects a segment boundary inside the same process lifetime
+
+The metadata and sidecar both include `format_version`, `schema_version`, and
+`delta_mode`. The first record in every new file is always a checkpoint.
 
 ## Build On Another Host
 

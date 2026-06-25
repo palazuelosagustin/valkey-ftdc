@@ -1,6 +1,7 @@
 #include "ftdc.h"
 
 #include "collector.h"
+#include "delta.h"
 #include "redact.h"
 #include "writer.h"
 
@@ -24,7 +25,10 @@ FtdcState g_ftdc = {
         .collect_slowlog = 0,
         .slowlog_redact = 1,
         .compression = 0,
+        .delta_metrics = 0,
+        .checkpoint_interval_ms = 60000,
     },
+    .need_checkpoint = 1,
 };
 
 long long ftdc_now_ms(void) {
@@ -97,7 +101,7 @@ void ftdc_stop_timer(ValkeyModuleCtx *ctx) {
 }
 
 static void reply_status(ValkeyModuleCtx *ctx) {
-    ValkeyModule_ReplyWithMap(ctx, 8);
+    ValkeyModule_ReplyWithMap(ctx, 12);
     ValkeyModule_ReplyWithSimpleString(ctx, "enabled");
     ValkeyModule_ReplyWithSimpleString(ctx, ftdc_bool_name(g_ftdc.config.enabled));
     ValkeyModule_ReplyWithSimpleString(ctx, "path");
@@ -114,6 +118,14 @@ static void reply_status(ValkeyModuleCtx *ctx) {
     ValkeyModule_ReplyWithLongLong(ctx, g_ftdc.last_sample_time_ms);
     ValkeyModule_ReplyWithSimpleString(ctx, "last_error");
     ValkeyModule_ReplyWithStringBuffer(ctx, g_ftdc.last_error, strlen(g_ftdc.last_error));
+    ValkeyModule_ReplyWithSimpleString(ctx, "delta_metrics");
+    ValkeyModule_ReplyWithSimpleString(ctx, ftdc_bool_name(g_ftdc.config.delta_metrics));
+    ValkeyModule_ReplyWithSimpleString(ctx, "checkpoint_interval_ms");
+    ValkeyModule_ReplyWithLongLong(ctx, g_ftdc.config.checkpoint_interval_ms);
+    ValkeyModule_ReplyWithSimpleString(ctx, "checkpoints_written");
+    ValkeyModule_ReplyWithLongLong(ctx, (long long)g_ftdc.checkpoints_written);
+    ValkeyModule_ReplyWithSimpleString(ctx, "deltas_written");
+    ValkeyModule_ReplyWithLongLong(ctx, (long long)g_ftdc.deltas_written);
 }
 
 static int command_status(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int argc) {
@@ -201,6 +213,10 @@ static int config_get_one(ValkeyModuleCtx *ctx, const char *name) {
         return ValkeyModule_ReplyWithSimpleString(ctx, ftdc_bool_name(g_ftdc.config.collect_slowlog));
     } else if (strcmp(name, "slowlog-redact") == 0) {
         return ValkeyModule_ReplyWithSimpleString(ctx, ftdc_bool_name(g_ftdc.config.slowlog_redact));
+    } else if (strcmp(name, "delta-metrics") == 0) {
+        return ValkeyModule_ReplyWithSimpleString(ctx, ftdc_bool_name(g_ftdc.config.delta_metrics));
+    } else if (strcmp(name, "checkpoint-interval-ms") == 0) {
+        return ValkeyModule_ReplyWithLongLong(ctx, g_ftdc.config.checkpoint_interval_ms);
     }
     return ValkeyModule_ReplyWithError(ctx, "ERR unknown config key");
 }
@@ -228,7 +244,7 @@ static int command_config(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int a
         if (argc != 2) {
             return ValkeyModule_WrongArity(ctx);
         }
-        ValkeyModule_ReplyWithMap(ctx, 10);
+        ValkeyModule_ReplyWithMap(ctx, 12);
         ValkeyModule_ReplyWithSimpleString(ctx, "enabled");
         config_get_one(ctx, "enabled");
         ValkeyModule_ReplyWithSimpleString(ctx, "path");
@@ -249,6 +265,10 @@ static int command_config(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int a
         config_get_one(ctx, "collect-host-stats");
         ValkeyModule_ReplyWithSimpleString(ctx, "collect-slowlog");
         config_get_one(ctx, "collect-slowlog");
+        ValkeyModule_ReplyWithSimpleString(ctx, "delta-metrics");
+        config_get_one(ctx, "delta-metrics");
+        ValkeyModule_ReplyWithSimpleString(ctx, "checkpoint-interval-ms");
+        config_get_one(ctx, "checkpoint-interval-ms");
         return VALKEYMODULE_OK;
     }
     if (op_len == 3 && strncasecmp(op, "SET", 3) == 0) {
@@ -279,6 +299,7 @@ static int command_config(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int a
             if (boolv) ftdc_schedule_timer(ctx); else ftdc_stop_timer(ctx);
         } else if (strcmp(key, "path") == 0) {
             snprintf(g_ftdc.config.path, sizeof(g_ftdc.config.path), "%s", value);
+            ftdc_delta_reset_segment(&g_ftdc);
             ftdc_writer_rotate(ctx, &g_ftdc);
         } else if (strcmp(key, "interval-ms") == 0) {
             if (ValkeyModule_StringToLongLong(argv[3], &ll) != VALKEYMODULE_OK || ll < 100) goto bad_value;
@@ -308,6 +329,13 @@ static int command_config(ValkeyModuleCtx *ctx, ValkeyModuleString **argv, int a
             g_ftdc.config.slowlog_redact = boolv;
         } else if (strcmp(key, "compression") == 0) {
             if (strcmp(value, "none") != 0) goto bad_value;
+        } else if (strcmp(key, "delta-metrics") == 0) {
+            if (ftdc_string_to_bool(value, &boolv) != VALKEYMODULE_OK) goto bad_value;
+            g_ftdc.config.delta_metrics = boolv;
+            ftdc_delta_reset_segment(&g_ftdc);
+        } else if (strcmp(key, "checkpoint-interval-ms") == 0) {
+            if (ValkeyModule_StringToLongLong(argv[3], &ll) != VALKEYMODULE_OK || ll < 1000) goto bad_value;
+            g_ftdc.config.checkpoint_interval_ms = ll;
         } else {
             ValkeyModule_ReplyWithError(ctx, "ERR unknown config key");
             return VALKEYMODULE_OK;
@@ -370,6 +398,12 @@ static int parse_load_args(ValkeyModuleString **argv, int argc) {
         } else if (strcmp(key, "redact") == 0) {
             if (ftdc_string_to_bool(value, &boolv) != VALKEYMODULE_OK) return VALKEYMODULE_ERR;
             g_ftdc.config.redact = boolv;
+        } else if (strcmp(key, "delta-metrics") == 0) {
+            if (ftdc_string_to_bool(value, &boolv) != VALKEYMODULE_OK) return VALKEYMODULE_ERR;
+            g_ftdc.config.delta_metrics = boolv;
+        } else if (strcmp(key, "checkpoint-interval-ms") == 0) {
+            if (ValkeyModule_StringToLongLong(argv[i + 1], &ll) != VALKEYMODULE_OK) return VALKEYMODULE_ERR;
+            g_ftdc.config.checkpoint_interval_ms = ll;
         } else {
             return VALKEYMODULE_ERR;
         }

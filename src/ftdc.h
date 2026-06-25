@@ -14,6 +14,13 @@
 #define FTDC_MODULE_NAME "ftdc"
 #define FTDC_FILE_MAGIC "VKFTDC1\n"
 #define FTDC_METADATA_VERSION 1
+#define FTDC_FORMAT_VERSION_SNAPSHOT 1
+#define FTDC_FORMAT_VERSION_DELTA 2
+
+typedef enum FtdcSampleMode {
+    FTDC_SAMPLE_MODE_SNAPSHOT = 0,
+    FTDC_SAMPLE_MODE_DELTA = 1,
+} FtdcSampleMode;
 
 typedef struct FtdcConfig {
     int enabled;
@@ -27,7 +34,18 @@ typedef struct FtdcConfig {
     int collect_slowlog;
     int slowlog_redact;
     int compression;
+    int delta_metrics;
+    long long checkpoint_interval_ms;
 } FtdcConfig;
+
+typedef struct FtdcIdentity {
+    long long ts_ms;
+    long long process_id;
+    long long uptime_in_seconds;
+    char run_id[128];
+    char role[32];
+    int valid;
+} FtdcIdentity;
 
 typedef struct FtdcState {
     FtdcConfig config;
@@ -41,6 +59,13 @@ typedef struct FtdcState {
     char last_error[256];
     ValkeyModuleTimerID timer_id;
     int timer_active;
+    int need_checkpoint;
+    long long last_checkpoint_time_ms;
+    FtdcIdentity last_identity;
+    uint64_t checkpoints_written;
+    uint64_t deltas_written;
+    uint64_t restart_records_written;
+    void *delta_state;
 } FtdcState;
 
 extern FtdcState g_ftdc;

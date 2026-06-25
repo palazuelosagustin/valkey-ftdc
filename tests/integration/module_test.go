@@ -60,6 +60,65 @@ func sampleJSON(t *testing.T, port int) map[string]any {
 	return sample
 }
 
+func latestMetricsFile(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := ""
+	for _, ent := range entries {
+		if strings.HasPrefix(ent.Name(), "metrics.") {
+			if ent.Name() > latest {
+				latest = ent.Name()
+			}
+		}
+	}
+	if latest == "" {
+		t.Fatal("expected metrics file")
+	}
+	return filepath.Join(dir, latest)
+}
+
+func readMetricsRecords(t *testing.T, path string) (map[string]any, []map[string]any) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	if !sc.Scan() {
+		t.Fatal("missing file magic")
+	}
+	if got := sc.Text(); got != "VKFTDC1" {
+		t.Fatalf("unexpected magic %q", got)
+	}
+	if !sc.Scan() {
+		t.Fatal("missing metadata line")
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(sc.Bytes(), &metadata); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	var records []map[string]any
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("unmarshal record %q: %v", line, err)
+		}
+		records = append(records, rec)
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return metadata, records
+}
+
 func TestModuleLifecycle(t *testing.T) {
 	if _, err := exec.LookPath("valkey-server"); err != nil {
 		t.Skip("valkey-server not found")
@@ -159,6 +218,77 @@ func TestModuleLifecycle(t *testing.T) {
 	}
 }
 
+func TestDeltaMetricsWriteCheckpointAndDeltaRecords(t *testing.T) {
+	if _, err := exec.LookPath("valkey-server"); err != nil {
+		t.Skip("valkey-server not found")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modulePath := filepath.Join(root, "build", "valkey-ftdc.so")
+	if _, err := os.Stat(modulePath); err != nil {
+		t.Skip("module not built")
+	}
+	port := freePort(t)
+	tmp := t.TempDir()
+	diagDir := filepath.Join(tmp, "diagnostic.data")
+	cmd := exec.Command("valkey-server",
+		"--port", strconv.Itoa(port),
+		"--save", "",
+		"--appendonly", "no",
+		"--loadmodule", modulePath,
+		"path", diagDir,
+		"interval-ms", "100",
+		"checkpoint-interval-ms", "60000",
+		"delta-metrics", "yes",
+		"collect-host-stats", "no",
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = exec.Command("valkey-cli", "-p", strconv.Itoa(port), "SHUTDOWN", "NOSAVE").Run()
+		_ = cmd.Wait()
+	}()
+	waitPing(t, port)
+
+	for i := 0; i < 5; i++ {
+		_ = runCLI(t, port, "PING")
+		time.Sleep(120 * time.Millisecond)
+	}
+	if out := runCLI(t, port, "FTDC.FLUSH"); out != "OK" {
+		t.Fatalf("flush failed: %s", out)
+	}
+
+	metadata, records := readMetricsRecords(t, latestMetricsFile(t, diagDir))
+	if got := metadata["format_version"]; got != float64(2) {
+		t.Fatalf("unexpected format version %#v", got)
+	}
+	if got := metadata["delta_mode"]; got != true {
+		t.Fatalf("expected delta mode metadata, got %#v", got)
+	}
+	if len(records) < 2 {
+		t.Fatalf("expected at least 2 records, got %d", len(records))
+	}
+	if kind, _ := records[0]["sample_kind"].(string); kind != "checkpoint" {
+		t.Fatalf("expected first record checkpoint, got %#v", records[0])
+	}
+	foundDelta := false
+	for _, rec := range records[1:] {
+		if kind, _ := rec["sample_kind"].(string); kind == "delta" {
+			foundDelta = true
+			if _, ok := rec["deltas"].(map[string]any); !ok {
+				t.Fatalf("delta record missing deltas map: %#v", rec)
+			}
+			break
+		}
+	}
+	if !foundDelta {
+		t.Fatalf("expected delta record, got %#v", records)
+	}
+}
+
 func TestHostStatsIncludeRawProcStatCounters(t *testing.T) {
 	if _, err := exec.LookPath("valkey-server"); err != nil {
 		t.Skip("valkey-server not found")
@@ -222,5 +352,51 @@ func TestMetricsFileHasHeader(t *testing.T) {
 	}
 	if !bytes.Equal(line, []byte("VKFTDC1\n")) {
 		t.Fatalf("unexpected header: %q", line)
+	}
+}
+
+func TestConfigReportsDeltaSettings(t *testing.T) {
+	if _, err := exec.LookPath("valkey-server"); err != nil {
+		t.Skip("valkey-server not found")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modulePath := filepath.Join(root, "build", "valkey-ftdc.so")
+	if _, err := os.Stat(modulePath); err != nil {
+		t.Skip("module not built")
+	}
+	port := freePort(t)
+	tmp := t.TempDir()
+	cmd := exec.Command("valkey-server",
+		"--port", strconv.Itoa(port),
+		"--save", "",
+		"--appendonly", "no",
+		"--loadmodule", modulePath,
+		"path", filepath.Join(tmp, "diagnostic.data"),
+		"delta-metrics", "yes",
+		"checkpoint-interval-ms", "60000",
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = exec.Command("valkey-cli", "-p", strconv.Itoa(port), "SHUTDOWN", "NOSAVE").Run()
+		_ = cmd.Wait()
+	}()
+	waitPing(t, port)
+
+	all := runCLI(t, port, "FTDC.CONFIG", "GET")
+	for _, needle := range []string{"delta-metrics", "yes", "checkpoint-interval-ms", "60000"} {
+		if !strings.Contains(all, needle) {
+			t.Fatalf("expected %q in config output:\n%s", needle, all)
+		}
+	}
+	status := runCLI(t, port, "FTDC.STATUS")
+	for _, needle := range []string{"delta_metrics", "yes", "checkpoint_interval_ms", "60000"} {
+		if !strings.Contains(status, needle) {
+			t.Fatalf("expected %q in status output:\n%s", needle, status)
+		}
 	}
 }
