@@ -107,6 +107,7 @@ static void copy_truncated(char *dst, size_t dst_len, const char *src) {
 
 static int parse_json_string(const char **p, char *dst, size_t dst_len) {
     size_t len = 0;
+    int store = dst != NULL && dst_len > 0;
     if (**p != '"') {
         return -1;
     }
@@ -143,17 +144,21 @@ static int parse_json_string(const char **p, char *dst, size_t dst_len) {
                     return -1;
             }
         }
-        if (len + 1 >= dst_len) {
-            return -1;
+        if (store) {
+            if (len + 1 >= dst_len) {
+                return -1;
+            }
+            dst[len++] = ch;
         }
-        dst[len++] = ch;
         ++(*p);
     }
     if (**p != '"') {
         return -1;
     }
     ++(*p);
-    dst[len] = '\0';
+    if (store) {
+        dst[len] = '\0';
+    }
     return 0;
 }
 
@@ -361,10 +366,17 @@ static int parse_flat_value(const char **p, FlatSample *flat, char *path, size_t
         return skip_json_array(p);
     }
     if (**p == '"') {
-        if (parse_json_string(p, tmp, sizeof(tmp)) != 0) {
+        if (strcmp(path, "valkey.info.server.run_id") == 0 ||
+            strcmp(path, "valkey.info.replication.role") == 0) {
+            if (parse_json_string(p, tmp, sizeof(tmp)) != 0) {
+                return -1;
+            }
+            flat_sample_note_string(flat, path, tmp);
+            return 0;
+        }
+        if (parse_json_string(p, NULL, 0) != 0) {
             return -1;
         }
-        flat_sample_note_string(flat, path, tmp);
         return 0;
     }
     if (**p == '-' || isdigit((unsigned char)**p)) {

@@ -289,6 +289,59 @@ func TestDeltaMetricsWriteCheckpointAndDeltaRecords(t *testing.T) {
 	}
 }
 
+func TestDeltaMetricsWriteSamplesWithHostStatsEnabled(t *testing.T) {
+	if _, err := exec.LookPath("valkey-server"); err != nil {
+		t.Skip("valkey-server not found")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modulePath := filepath.Join(root, "build", "valkey-ftdc.so")
+	if _, err := os.Stat(modulePath); err != nil {
+		t.Skip("module not built")
+	}
+	port := freePort(t)
+	tmp := t.TempDir()
+	diagDir := filepath.Join(tmp, "diagnostic.data")
+	cmd := exec.Command("valkey-server",
+		"--port", strconv.Itoa(port),
+		"--save", "",
+		"--appendonly", "no",
+		"--loadmodule", modulePath,
+		"path", diagDir,
+		"interval-ms", "100",
+		"checkpoint-interval-ms", "60000",
+		"delta-metrics", "yes",
+		"collect-host-stats", "yes",
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = exec.Command("valkey-cli", "-p", strconv.Itoa(port), "SHUTDOWN", "NOSAVE").Run()
+		_ = cmd.Wait()
+	}()
+	waitPing(t, port)
+
+	for i := 0; i < 5; i++ {
+		_ = runCLI(t, port, "PING")
+		time.Sleep(120 * time.Millisecond)
+	}
+	if out := runCLI(t, port, "FTDC.FLUSH"); out != "OK" {
+		t.Fatalf("flush failed: %s", out)
+	}
+	status := runCLI(t, port, "FTDC.STATUS")
+	if strings.Contains(status, "delta encoding failed") {
+		t.Fatalf("unexpected status error: %s", status)
+	}
+
+	_, records := readMetricsRecords(t, latestMetricsFile(t, diagDir))
+	if len(records) == 0 {
+		t.Fatal("expected at least one metrics record")
+	}
+}
+
 func TestHostStatsIncludeRawProcStatCounters(t *testing.T) {
 	if _, err := exec.LookPath("valkey-server"); err != nil {
 		t.Skip("valkey-server not found")
